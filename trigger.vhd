@@ -31,7 +31,7 @@ end trigger;
 
 architecture RTL of trigger is
 	constant FirmwareType: integer := 5;
-	constant FirmwareRevision: integer := 8;
+	constant FirmwareRevision: integer := 9;
 	signal TRIG_FIXED : std_logic_vector(31 downto 0); 
 
 	subtype sub_Address is std_logic_vector(11 downto 4);
@@ -103,7 +103,7 @@ architecture RTL of trigger is
 	END COMPONENT;
 	
 	signal ModuleEventIDInput : std_logic_vector(31 downto 0);
-	signal SenderResetID : std_logic;
+	signal SenderResetID : std_logic := '0';
 	signal ModuleDataSignalOut : std_logic;
 
 	------------------------------------------------------------------------------
@@ -144,7 +144,7 @@ begin
 		NTECModuleDataPresentSignal(i) <= '1' when LongCFDSignals((NumberOfSignalsPerModule-1)+i*NumberOfSignalsPerModule downto 0+i*NumberOfSignalsPerModule) /= "0" else '0';
 	end generate;
 
-	--ExperimentTriggerSignal <= nim_in; -- Experiment Trigger triggers the sending of Pattern Mask (data tells which NTEC card has data)
+--	ExperimentTriggerSignal <= nim_in; -- Experiment Trigger triggers the sending of Pattern Mask (data tells which NTEC card has data)
 	ExperimentTriggerSignal <= trig_in(6*32+3); --From-Veto: ExpTrigger Signal, INOUT4, ch3
 	process(clock50)
 	begin
@@ -161,13 +161,13 @@ begin
 			if ExperimentTriggerSignal_Gated = "01" then
 				SenderResetID <= '1';
 				NTECModuleDataPresentSignal_Saved <= NTECModuleDataPresentSignal;
-			end if;
+			end if;	
 		end if;
 	end process;
 	
 	ModuleEventIDInput <= (31 downto 16 => '0') & NTECModuleDataPresentSignal_Saved;
 	Inst_ModuleHitPatternSender: EventIDSender PORT MAP(
-		StatusCounter => open,
+		StatusCounter => DebugSignals(323+6 downto 323+0),
 		UserEventID => ModuleEventIDInput,
 		ResetSenderCounter => SenderResetID,
 		OutputPin => ModuleDataSignalOut,
@@ -187,6 +187,8 @@ begin
 	DebugSignals(7*32+1) <= SenderResetID;
 	DebugSignals(7*32+2) <= ModuleDataSignalOut;
 	DebugSignals(7*32+3+15 downto 7*32+3) <= NTECModuleDataPresentSignal;
+	DebugSignals(243+63 downto 243) <= LongCFDSignals;
+	DebugSignals(243+63+16 downto 243+64) <= NTECModuleDataPresentSignal_Saved;
 	
 
 	-------------------------------------------------------------------------------------------------
