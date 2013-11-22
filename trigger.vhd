@@ -30,17 +30,19 @@ end trigger;
 
 
 architecture RTL of trigger is
+	constant FirmwareType: integer := 5;
+	constant FirmwareRevision: integer := 6;
+	signal TRIG_FIXED : std_logic_vector(31 downto 0); 
 
-	subtype sub_Adress is std_logic_vector(11 downto 4);
-	constant BASE_TRIG_InputPatternMask_IN1 : sub_Adress 			:= x"50" ; -- r/w
-	constant BASE_TRIG_InputPatternMask_IN2 : sub_Adress 			:= x"51" ; -- r/w
-	constant BASE_TRIG_InputPatternMask_IN3 : sub_Adress 			:= x"52" ; -- r/w
-	constant BASE_TRIG_InputPatternMask_INOUT1 : sub_Adress		:= x"53" ; -- r/w
-	constant BASE_TRIG_InputPatternMask_INOUT2 : sub_Adress		:= x"54" ; -- r/w
-	constant BASE_TRIG_InputPatternMask_INOUT3 : sub_Adress		:= x"55" ; -- r/w
+	subtype sub_Address is std_logic_vector(11 downto 4);
+	constant BASE_TRIG_InputPatternMask_IN1 : sub_Address 			:= x"50" ; -- r/w
+	constant BASE_TRIG_InputPatternMask_IN2 : sub_Address 			:= x"51" ; -- r/w
+	constant BASE_TRIG_InputPatternMask_IN3 : sub_Address 			:= x"52" ; -- r/w
+	constant BASE_TRIG_InputPatternMask_INOUT1 : sub_Address			:= x"53" ; -- r/w
+	constant BASE_TRIG_InputPatternMask_INOUT2 : sub_Address			:= x"54" ; -- r/w
+	constant BASE_TRIG_InputPatternMask_INOUT3 : sub_Address			:= x"55" ; -- r/w
 
-	constant BASE_TRIG_FIXED : sub_Adress 								:= x"f0" ; -- r
-	constant TRIG_FIXED_Master : std_logic_vector(31 downto 0)  := x"12112003"; -- 20.11.2012
+	constant BASE_TRIG_FIXED : sub_Address 								:= x"f0" ; -- r
 
 	------------------------------------------------------------------------------
 	
@@ -49,8 +51,6 @@ architecture RTL of trigger is
 	
 	signal CFD_Signals, LED1_Signals, LED2_Signals : std_logic_vector(63 downto 0);
 	signal CFD_SectorOR, LED1_SectorOR, LED2_SectorOR : std_logic;
-	
-	signal LED1_SectorOR_delayed : std_logic;
 	
 	--Signals for Coplanarity
 	signal SB : std_logic_vector(63 downto 0); --Signals Trigger is Based on
@@ -67,13 +67,90 @@ architecture RTL of trigger is
 				  clock : in  STD_LOGIC);
 	end component;
 	
-	COMPONENT AnalogDelayLine
-   PORT( Delay_IN	:	IN	STD_LOGIC; 
-          Delay_Out	:	OUT	STD_LOGIC);
-   END COMPONENT;
+	COMPONENT Input_Enlarger
+	Generic (
+		Width : integer := 200
+		);
+	PORT(
+		clock : IN std_logic;
+		input_signal : IN std_logic;          
+		output_signal : OUT std_logic
+		);
+	END COMPONENT;
+
+	constant NumberCFDOfSignals: integer := 64;
+	constant NumberOfSignalsPerModule: integer := 4;
+	signal LongCFDSignals : std_logic_vector(NumberCFDOfSignals-1 downto 0);
+	signal NTECModuleDataPresentSignal, NTECModuleDataPresentSignal_Saved : std_logic_vector( (NumberCFDOfSignals/NumberOfSignalsPerModule)-1 downto 0);
+	signal ExperimentTriggerSignal : std_logic;
+	signal ExperimentTriggerSignal_Gated : std_logic_vector(1 downto 0);
+	
+	COMPONENT EventIDSender
+	PORT(
+		UserEventID : IN std_logic_vector(31 downto 0);
+		ResetSenderCounter : IN std_logic;
+		clock50 : IN std_logic;          
+		StatusCounter : OUT std_logic_vector(6 downto 0);
+		OutputPin : OUT std_logic
+		);
+	END COMPONENT;
+	
+	signal ModuleEventIDInput : std_logic_vector(31 downto 0);
+	signal SenderResetID : std_logic;
+	signal ModuleDataSignalOut : std_logic;
+
+begin
+	TRIG_FIXED(31 downto 24) <= CONV_STD_LOGIC_VECTOR(FirmwareType, 8);
+	TRIG_FIXED(23 downto 16) <= CONV_STD_LOGIC_VECTOR(0, 8);
+	TRIG_FIXED(15 downto 0)  <= CONV_STD_LOGIC_VECTOR(FirmwareRevision, 16);
+
+	LengthenCFDSignals: for i in 0 to NumberCFDOfSignals-1 generate
+		CFDEnlarger: Input_Enlarger 
+			GENERIC MAP(Width => 270) --2.7 mu s
+			PORT MAP(
+				clock => clock100,
+				input_signal => trig_in(i),
+				output_signal => LongCFDSignals(i)
+			);
+	end generate;
+
+	ModuleDataSignals: for i in 0 to (NumberCFDOfSignals/NumberOfSignalsPerModule)-1 generate
+		NTECModuleDataPresentSignal(i) <= '1' when LongCFDSignals(3+i*4 downto 0+i*4) /= "0" else '0';
+	end generate;
+
+	--ExperimentTriggerSignal <= nim_in; -- Experiment Trigger triggers the sending of Pattern Mask (data tells which NTEC card has data)
+	ExperimentTriggerSignal <= trig_in(6*32+3); --From-Veto: ExpTrigger Signal, INOUT4, ch3
+	process(clock50)
+	begin
+		if rising_edge(clock50) then
+			ExperimentTriggerSignal_Gated(0) <= ExperimentTriggerSignal;
+			ExperimentTriggerSignal_Gated(1) <= ExperimentTriggerSignal_Gated(0);
+		end if;
+	end process;
+	
+	process(clock50)
+	begin
+		if rising_edge(clock50) then
+			SenderResetID <= '0';
+			if ExperimentTriggerSignal_Gated = "01" then
+				SenderResetID <= '1';
+				NTECModuleDataPresentSignal_Saved <= NTECModuleDataPresentSignal;
+			end if;
+		end if;
+	end process;
+	
+	ModuleEventIDInput <= (31 downto 16 => '0') & NTECModuleDataPresentSignal_Saved;
+	Inst_ModuleHitPatternSender: EventIDSender PORT MAP(
+		StatusCounter => open,
+		UserEventID => ModuleEventIDInput,
+		ResetSenderCounter => SenderResetID,
+		OutputPin => ModuleDataSignalOut,
+		clock50 => clock50
+	);
+	nim_out <= ModuleDataSignalOut;
 
 	
-begin
+	
 	------------------------------------------------------------------------------------------------
 	-- Enable/Disable individual channels
 	Post_trig_in <= trig_in(6*32-1 downto 0) and InputPatternMask;
@@ -118,24 +195,19 @@ begin
 	LED1_SectorOR <= '1' when LED1_Signals /= "0" else '0';
 	LED2_SectorOR <= '1' when LED2_Signals /= "0" else '0';
 
-
-	--nim_out <= LED1_SectorOR;
-	
-	DelayLine60ns: AnalogDelayLine PORT MAP(
-		Delay_IN => LED1_SectorOR, 
-		Delay_Out => LED1_SectorOR_delayed
-   );
-	
-	nim_out <= LED1_SectorOR_delayed;
-	
 	trig_out(0) <= CFD_SectorOR;
 	trig_out(1) <= LED1_SectorOR;
 	trig_out(2) <= LED2_SectorOR;
 	trig_out(3) <= trig_in(6*32); --Veto-OR: INOUT4, ch0
 	trig_out(4) <= trig_in(6*32+1); --PWO-OR: INOUT4, ch1
 	trig_out(5) <= trig_in(6*32+2); --PWO-Veto-OR: INOUT4, ch2
-	trig_out(11) <= nim_in; --Sector A = TAPS busy, Sector B = CB busy
-	trig_out(12) <= LED1_SectorOR_delayed;
+	trig_out(6) <= ExperimentTriggerSignal;
+	trig_out(7) <= SenderResetID;
+	trig_out(8) <= ModuleDataSignalOut;
+	trig_out(9) <= NTECModuleDataPresentSignal(1);
+	trig_out(10) <= NTECModuleDataPresentSignal_Saved(1);
+	trig_out(11) <= NIM_IN; -- Sector B, NIM_IN: TAPS_L1_Interrupt_Delayed, Sector F, NIM_IN: PulserOutput_PreScaled_ExtDelayed
+
 	
 	----------------------------------------------------------------------------------------------------------------------------------------------------------------
 	--Coplanarity Trigger start
@@ -215,10 +287,6 @@ begin
 	----------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 	
-	
-	
-	
-	
 
 	---------------------------------------------------------------------------------------------------------	
 	-- Code for VME handling / access
@@ -227,23 +295,14 @@ begin
 	process(clock50, oecsr, u_ad_reg)
 	begin
 		if (clock50'event and clock50 = '1' and oecsr = '1') then
-			u_data_o <= (others => '0');
-				
-			if (u_ad_reg(11 downto 4) =  BASE_TRIG_FIXED) then 
-				u_data_o(31 downto 0) <= TRIG_FIXED_Master; end if;
-			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_IN1) then 
-				u_data_o(31 downto 0) <= InputPatternMask(32*0+31 downto 32*0+0); end if;
-			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_IN2) then 
-				u_data_o(31 downto 0) <= InputPatternMask(32*1+31 downto 32*1+0); end if;
-			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_IN3) then 
-				u_data_o(31 downto 0) <= InputPatternMask(32*2+31 downto 32*2+0); end if;
-			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_INOUT1) then 
-				u_data_o(31 downto 0) <= InputPatternMask(32*3+31 downto 32*3+0); end if;
-			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_INOUT2) then 
-				u_data_o(31 downto 0) <= InputPatternMask(32*4+31 downto 32*4+0); end if;
-			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_INOUT3) then 
-				u_data_o(31 downto 0) <= InputPatternMask(32*5+31 downto 32*5+0); end if;
-
+			u_data_o <= (others => '0');		
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_FIXED) then 						u_data_o(31 downto 0) <= TRIG_FIXED; end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_IN1) then 	u_data_o(31 downto 0) <= InputPatternMask(32*0+31 downto 32*0+0); end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_IN2) then 	u_data_o(31 downto 0) <= InputPatternMask(32*1+31 downto 32*1+0); end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_IN3) then 	u_data_o(31 downto 0) <= InputPatternMask(32*2+31 downto 32*2+0); end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_INOUT1) then u_data_o(31 downto 0) <= InputPatternMask(32*3+31 downto 32*3+0); end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_INOUT2) then u_data_o(31 downto 0) <= InputPatternMask(32*4+31 downto 32*4+0); end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_INOUT3) then u_data_o(31 downto 0) <= InputPatternMask(32*5+31 downto 32*5+0); end if;
 		end if;
 	end process;
 
@@ -255,19 +314,12 @@ begin
 	process(clock50, ckcsr, u_ad_reg)
 	begin
 		if (clock50'event and clock50 ='1') then
-			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_IN1 ) then
-				InputPatternMask(32*0+31 downto 32*0+0) <= u_dat_in; end if;
-			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_IN2 ) then
-				InputPatternMask(32*1+31 downto 32*1+0) <= u_dat_in; end if;
-			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_IN3 ) then
-				InputPatternMask(32*2+31 downto 32*2+0) <= u_dat_in; end if;
-			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_INOUT1 ) then
-				InputPatternMask(32*3+31 downto 32*3+0) <= u_dat_in; end if;
-			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_INOUT2 ) then
-				InputPatternMask(32*4+31 downto 32*4+0) <= u_dat_in; end if;
-			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_INOUT3 ) then
-				InputPatternMask(32*5+31 downto 32*5+0) <= u_dat_in; end if;
-			
+			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_IN1 ) then InputPatternMask(32*0+31 downto 32*0+0) <= u_dat_in; end if;
+			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_IN2 ) then InputPatternMask(32*1+31 downto 32*1+0) <= u_dat_in; end if;
+			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_IN3 ) then InputPatternMask(32*2+31 downto 32*2+0) <= u_dat_in; end if;
+			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_INOUT1 ) then InputPatternMask(32*3+31 downto 32*3+0) <= u_dat_in; end if;
+			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_INOUT2 ) then InputPatternMask(32*4+31 downto 32*4+0) <= u_dat_in; end if;
+			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_INOUT3 ) then InputPatternMask(32*5+31 downto 32*5+0) <= u_dat_in; end if;			
 		end if;
 	end process;
 	
