@@ -31,7 +31,7 @@ end trigger;
 
 architecture RTL of trigger is
 	constant FirmwareType: integer := 5;
-	constant FirmwareRevision: integer := 6;
+	constant FirmwareRevision: integer := 8;
 	signal TRIG_FIXED : std_logic_vector(31 downto 0); 
 
 	subtype sub_Address is std_logic_vector(11 downto 4);
@@ -41,6 +41,13 @@ architecture RTL of trigger is
 	constant BASE_TRIG_InputPatternMask_INOUT1 : sub_Address			:= x"53" ; -- r/w
 	constant BASE_TRIG_InputPatternMask_INOUT2 : sub_Address			:= x"54" ; -- r/w
 	constant BASE_TRIG_InputPatternMask_INOUT3 : sub_Address			:= x"55" ; -- r/w
+
+	--debug
+	constant BASE_TRIG_Debug_ActualState : sub_Address							:= x"e0"; --r
+	constant BASE_TRIG_SelectedDebugInput_1 : sub_Address						:= x"e1"; --r/w
+	constant BASE_TRIG_SelectedDebugInput_2 : sub_Address						:= x"e2"; --r/w
+	constant BASE_TRIG_SelectedDebugInput_3 : sub_Address						:= x"e3"; --r/w
+	constant BASE_TRIG_SelectedDebugInput_4 : sub_Address						:= x"e4"; --r/w
 
 	constant BASE_TRIG_FIXED : sub_Address 								:= x"f0" ; -- r
 
@@ -99,6 +106,25 @@ architecture RTL of trigger is
 	signal SenderResetID : std_logic;
 	signal ModuleDataSignalOut : std_logic;
 
+	------------------------------------------------------------------------------
+	-- DebugChSelector
+
+	COMPONENT DebugChSelector
+	PORT(
+		DebugSignalsIn : IN std_logic_vector(479 downto 0);
+		SelectedInput : IN std_logic_vector(8 downto 0);          
+		SelectedOutput : OUT std_logic
+		);
+	END COMPONENT;
+
+	constant NDebugSignalOutputs : integer := 4;
+	signal DebugSignals : std_logic_vector(479 downto 0);
+	signal SelectedDebugInput : std_logic_vector(9*NDebugSignalOutputs-1 downto 0);
+	signal Debug_ActualState : std_logic_vector(NDebugSignalOutputs-1 downto 0);
+
+	------------------------------------------------------------------------------
+
+
 begin
 	TRIG_FIXED(31 downto 24) <= CONV_STD_LOGIC_VECTOR(FirmwareType, 8);
 	TRIG_FIXED(23 downto 16) <= CONV_STD_LOGIC_VECTOR(0, 8);
@@ -115,7 +141,7 @@ begin
 	end generate;
 
 	ModuleDataSignals: for i in 0 to (NumberCFDOfSignals/NumberOfSignalsPerModule)-1 generate
-		NTECModuleDataPresentSignal(i) <= '1' when LongCFDSignals(3+i*4 downto 0+i*4) /= "0" else '0';
+		NTECModuleDataPresentSignal(i) <= '1' when LongCFDSignals((NumberOfSignalsPerModule-1)+i*NumberOfSignalsPerModule downto 0+i*NumberOfSignalsPerModule) /= "0" else '0';
 	end generate;
 
 	--ExperimentTriggerSignal <= nim_in; -- Experiment Trigger triggers the sending of Pattern Mask (data tells which NTEC card has data)
@@ -154,6 +180,29 @@ begin
 	------------------------------------------------------------------------------------------------
 	-- Enable/Disable individual channels
 	Post_trig_in <= trig_in(6*32-1 downto 0) and InputPatternMask;
+
+
+	DebugSignals(7*32-1 downto 0) <= trig_in;
+	DebugSignals(7*32) <= NIM_IN;
+	DebugSignals(7*32+1) <= SenderResetID;
+	DebugSignals(7*32+2) <= ModuleDataSignalOut;
+	DebugSignals(7*32+3+15 downto 7*32+3) <= NTECModuleDataPresentSignal;
+	
+
+	-------------------------------------------------------------------------------------------------
+	-- Debug Selector
+	DebugChSelectors: for i in 0 to NDebugSignalOutputs-1 generate
+   begin
+		Inst_DebugChSelector: DebugChSelector PORT MAP(
+			DebugSignalsIn => DebugSignals,
+			SelectedInput => SelectedDebugInput((i+1)*9-1 downto i*9),  ---needs VME write
+			SelectedOutput => Debug_ActualState(i)
+		);
+	end generate;
+	trig_out(15 downto 12) <= Debug_ActualState;
+	-------------------------------------------------------------------------------------------------
+
+
 
 	------------------------------------------------------------------------------------------------
 	-- Switch on corresponding LED if cable is connected
@@ -303,6 +352,13 @@ begin
 			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_INOUT1) then u_data_o(31 downto 0) <= InputPatternMask(32*3+31 downto 32*3+0); end if;
 			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_INOUT2) then u_data_o(31 downto 0) <= InputPatternMask(32*4+31 downto 32*4+0); end if;
 			if (u_ad_reg(11 downto 4) =  BASE_TRIG_InputPatternMask_INOUT3) then u_data_o(31 downto 0) <= InputPatternMask(32*5+31 downto 32*5+0); end if;
+			--debug
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_SelectedDebugInput_1) then 			u_data_o(8 downto 0) <= SelectedDebugInput(9*1-1 downto 9*0); end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_SelectedDebugInput_2) then 			u_data_o(8 downto 0) <= SelectedDebugInput(9*2-1 downto 9*1); end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_SelectedDebugInput_3) then 			u_data_o(8 downto 0) <= SelectedDebugInput(9*3-1 downto 9*2); end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_SelectedDebugInput_4) then 			u_data_o(8 downto 0) <= SelectedDebugInput(9*4-1 downto 9*3); end if;
+			if (u_ad_reg(11 downto 4) =  BASE_TRIG_Debug_ActualState) then 				u_data_o(NDebugSignalOutputs-1 downto 0) <= Debug_ActualState; end if;
+
 		end if;
 	end process;
 
@@ -320,6 +376,12 @@ begin
 			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_INOUT1 ) then InputPatternMask(32*3+31 downto 32*3+0) <= u_dat_in; end if;
 			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_INOUT2 ) then InputPatternMask(32*4+31 downto 32*4+0) <= u_dat_in; end if;
 			if (ckcsr='1' and u_ad_reg(11 downto 4)= BASE_TRIG_InputPatternMask_INOUT3 ) then InputPatternMask(32*5+31 downto 32*5+0) <= u_dat_in; end if;			
+			--debug
+			if ( (ckcsr = '1') and (u_ad_reg(11 downto 4) =  BASE_TRIG_SelectedDebugInput_1) ) then 			SelectedDebugInput(9*1-1 downto 9*0) <= u_dat_in(8 downto 0); end if;
+			if ( (ckcsr = '1') and (u_ad_reg(11 downto 4) =  BASE_TRIG_SelectedDebugInput_2) ) then 			SelectedDebugInput(9*2-1 downto 9*1) <= u_dat_in(8 downto 0); end if;
+			if ( (ckcsr = '1') and (u_ad_reg(11 downto 4) =  BASE_TRIG_SelectedDebugInput_3) ) then 			SelectedDebugInput(9*3-1 downto 9*2) <= u_dat_in(8 downto 0); end if;
+			if ( (ckcsr = '1') and (u_ad_reg(11 downto 4) =  BASE_TRIG_SelectedDebugInput_4) ) then 			SelectedDebugInput(9*4-1 downto 9*3) <= u_dat_in(8 downto 0); end if;
+
 		end if;
 	end process;
 	
