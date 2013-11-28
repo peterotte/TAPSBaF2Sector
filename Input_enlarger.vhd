@@ -32,14 +32,13 @@ begin
 	process(clock)
 	begin
 		if rising_edge(clock) then
+			WaitCounter <= WaitCounter +1;
 			if (Input_Reg = b"01") then --leading edge of input signal
 				WaitCounter <= (others => '0');
 				inter_output_signal <= '1';
 			elsif (WaitCounter = CONV_STD_LOGIC_VECTOR(Width, NumberOfBits) ) then
-				WaitCounter <= (others => '1');
 				inter_output_signal <= '0';
 			else
-				WaitCounter <= WaitCounter +1;
 				inter_output_signal <= inter_output_signal;
 			end if;
 		end if;
